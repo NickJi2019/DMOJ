@@ -1,5 +1,7 @@
 package org.example
 
+import java.util.LinkedList
+import java.util.Queue
 import java.util.Scanner
 import kotlin.math.abs
 import kotlin.math.pow
@@ -11,26 +13,25 @@ fun Scanner.nextReal(): Real = this.nextDouble()
 fun Number.toReal(): Real = this.toDouble()
 
 // 数据结构类
-data class Point(var x: Real, var y: Real) // 二维坐标
-data class Vector(var deltaX: Real, var deltaY: Real) { // 二维向量
+data class Point(val x: Real, val y: Real) // 二维坐标
+data class Vector(val deltaX: Real, val deltaY: Real) { // 二维向量
     fun norm(): Real = sqrt(deltaX.pow(2) + deltaY.pow(2)) // 求模
 }
-data class Pair<A, B>(var first: A, var second: B) { // 二元组
-    override fun toString(): String = "($first, $second)"
-}
+
 
 data class Nemo(
-    var weight: Real,
-    var vitesseLimit: Real,
-    var pos: Point
+    val weight: Real,
+    val vitesseLimit: Real,
+    val pos: Point,
+    val eatRecord: Array<EatRecord> = arrayOf()
 )
 
 data class Shrimp(
     val id: Int,
     val weight: Real,
-    var pos: Point,
+    val pos: Point,
     val path: Vector,
-    var eaten: Boolean = false
+    val eaten: Boolean = false,
 ) {
     val vitesse: Real = path.norm() // 速度
     override fun toString(): String {
@@ -83,7 +84,6 @@ class Sea {
     companion object{
         object ShrimpIsEatenException : Exception()
         object TimeLimitExceededException : Exception()
-
         object UnableToCatchUpException : Exception()
         /*
         * 缓存相遇时间
@@ -107,11 +107,13 @@ class Sea {
     * @param nemoWeight: Real Nemo体重
     * @param nemoVitesseLimit: Real Nemo速度限制
     * */
-    constructor(shrimps: Array<Shrimp?>, time: Real, timeLimit: Real, nemoPos: Point, nemoWeight: Real, nemoVitesseLimit: Real) {
-        this.shrimps = shrimps.map { it?.copy() }.toTypedArray() //深拷贝
+    constructor(shrimps: Array<Shrimp?>, time: Real, timeLimit: Real, nemoPos: Point, nemoWeight: Real, nemoVitesseLimit: Real, eatRecord: Array<EatRecord> = arrayOf(), copyFlag: Boolean = true) {
+        this.shrimps =
+            if (copyFlag) shrimps.map { it?.copy() }.toTypedArray() //深拷贝
+            else shrimps
         this.time = time
         this.timeLimit = timeLimit
-        this.nemo = Nemo(nemoWeight, nemoVitesseLimit, nemoPos)
+        this.nemo = Nemo(nemoWeight, nemoVitesseLimit, nemoPos, eatRecord)
     }
     /*
     * @Constructor 用于复制同时进行修改的构造函数
@@ -131,8 +133,10 @@ class Sea {
         timeLimit: Real = s.timeLimit,
         nemoPos: Point = s.nemo.pos,
         nemoWeight: Real = s.nemo.weight,
-        nemoVitesseLimit: Real = s.nemo.vitesseLimit
-    ) : this(shrimps, time, timeLimit, nemoPos, nemoWeight, nemoVitesseLimit)
+        nemoVitesseLimit: Real = s.nemo.vitesseLimit,
+        eatRecord: Array<EatRecord> = s.nemo.eatRecord,
+        copyFlag: Boolean = true
+    ) : this(shrimps, time, timeLimit, nemoPos, nemoWeight, nemoVitesseLimit, eatRecord, copyFlag)
 
     // 重载equals
     override fun equals(other: Any?): Boolean {
@@ -174,39 +178,51 @@ class Sea {
     * @see calculateIntersection
     * @see moveToTime
     * */
-    fun eatShrimp(shrimp: Shrimp?): Pair<Sea, EatRecord> {
+    fun eatShrimp(shrimp: Shrimp?): Sea {
         shrimp ?: throw ShrimpIsEatenException
         val timeUsed = calculateTime(shrimp)
-
+        val intersection = calculateIntersection(shrimp)
         when {
             shrimp.eaten -> throw ShrimpIsEatenException
             timeUsed == Real.POSITIVE_INFINITY -> throw TimeLimitExceededException
             timeUsed + this.time > timeLimit -> throw UnableToCatchUpException
         }
 
-        shrimp.eaten = true
+        val s =
+            shrimps.map {
+                if (it == shrimp) {
+                    Shrimp(it.id, it.weight, intersection, it.path, true)
+                } else if(it == null || it.eaten){
+                    it
+                }else{
+                    Shrimp(
+                        it.id,
+                        it.weight,
+                        Point(it.pos.x + it.path.deltaX * timeUsed, it.pos.y + it.path.deltaY * timeUsed),
+                        it.path,
+                        it.eaten
+                    )
+                }
+            }.toTypedArray()
 
-        moveToTime(timeUsed)
-
-        return Pair(
-            Sea(this, time = this.time + timeUsed, nemoPos = calculateIntersection(shrimp), nemoWeight =  nemo.weight + shrimp.weight),
-            EatRecord(this.time + timeUsed, calculateIntersection(shrimp), shrimp.id)
+        return Sea(
+            this,
+            shrimps = s,
+            time = this.time + timeUsed,
+            nemoPos = intersection,
+            nemoWeight =  nemo.weight + shrimp.weight,
+            eatRecord = this.nemo.eatRecord + EatRecord(this.time + timeUsed, intersection, shrimp.id),
+            copyFlag = false
         )
     }
+
 
     /*
     * 前进至下一个时间点
     *
     * @param t: Real 时间
     * */
-    fun moveToTime(t: Real){
-        for (i in shrimps){
-            i ?: continue
-            if (i.eaten) continue
-            i.pos.x = i.pos.x + i.path.deltaX * t
-            i.pos.y = i.pos.y + i.path.deltaY * t
-        }
-    }
+
 
     /*
     * 计算经济性
@@ -252,7 +268,7 @@ class Sea {
         val c = deltaX * deltaX + deltaY * deltaY
 
         // 定义可接受的误差
-        val epsilon = 1e-6
+        val epsilon = 1e-12
 
         if (abs(a) < epsilon) {
             if (abs(b) < epsilon) {
@@ -265,7 +281,7 @@ class Sea {
         val discriminant = b * b - 4.0 * a * c
 
         if (discriminant < -epsilon) {
-            return Double.POSITIVE_INFINITY
+            return Real.POSITIVE_INFINITY
         }
 
         val sqrtDiscriminant = if (discriminant < 0.0) 0.0 else sqrt(discriminant)
@@ -301,61 +317,82 @@ class Sea {
         }
         return Point(shrimp.pos.x + shrimp.path.deltaX * time, shrimp.pos.y + shrimp.path.deltaY * time)
     }
+
+    fun calculateDistance(shrimp: Shrimp): Real {
+        val intersection = calculateIntersection(shrimp)
+        return sqrt(
+            (intersection.x - nemo.pos.x) * (intersection.x - nemo.pos.x) + (intersection.y - nemo.pos.y) * (intersection.y - nemo.pos.y)
+        )
+    }
+
+
+
 }
 
+fun bfs(sea: Sea): Sea{
+    val queue: Queue<Pair<Sea, Shrimp>> = LinkedList()
+    var best: Sea = sea
+
+    for (i in sea.shrimps){
+        queue.add(Pair(sea, i!!))
+    }
+
+    while (queue.isNotEmpty()){
+        val (current, currentShrimp) = queue.poll()
+        currentShrimp.let {
+            try{
+                val next = current.eatShrimp(it)
+                if (next.nemo.weight > best.nemo.weight) best = next
+                for (i in next.shrimps){
+                    if (i != null && !i.eaten){
+                        queue.add(Pair(next, i))
+                    }
+                }
+            }catch (_: Exception){}
+        }
+    }
+    return best
+}
 
 fun dfs(
     sea: Sea,
-    record: Pair<Real, ArrayList<EatRecord>>
-): Pair<Real, ArrayList<EatRecord>> {
-    val getShrimp = {s:Sea,i:Int -> s.shrimps[i] }
-    var bestRecord: Pair<Real, ArrayList<EatRecord>> = record
+): Sea {
+    var best: Sea = sea
 
     for (i in sea.shrimps.indices) {
-
-        if (getShrimp(sea,i) == null || getShrimp(sea,i)?.eaten == true) continue
+        val getShrimp = {s:Sea,i:Int -> s.shrimps[i] }
         if (sea.shrimps.all { it == null || it.eaten }) break
 
-        val nowSea = Sea(sea)
-        var nowRecord = Pair(record.first, ArrayList(record.second))
+        var nowSea = Sea(sea)
+
         var next: Sea
-        var rec: EatRecord
 
         try {
-            var (n, r) = nowSea.eatShrimp(getShrimp(nowSea,i))
-            next = n;rec = r
-        } catch (e: Sea.Companion.ShrimpIsEatenException) {
-            continue
-        } catch (e: Sea.Companion.TimeLimitExceededException) {
-            continue
-        } catch (e: Sea.Companion.UnableToCatchUpException) {
+            var n = nowSea.eatShrimp(getShrimp(nowSea,i))
+            next = n
+        } catch (_: Exception) {
             continue
         }
 
-        nowRecord.first = next.nemo.weight
-        nowRecord.second.add(rec)
+        nowSea = dfs(next)
 
-        nowRecord = dfs(next, nowRecord)
-
-        if (nowRecord.first > bestRecord.first) {
-            bestRecord = nowRecord
-        }
-        if (nowRecord.first == bestRecord.first) {
-            if (nowRecord.second.size < bestRecord.second.size) {
-                bestRecord = nowRecord
-            }
-            if (nowRecord.second.last().time!! < bestRecord.second.last().time!!) {
-                bestRecord = nowRecord
+        if (nowSea.nemo.weight > best.nemo.weight) {
+            best = nowSea
+        } else if (nowSea.nemo.weight == best.nemo.weight) {
+            if (nowSea.nemo.eatRecord.last().time!! < best.nemo.eatRecord.last().time!!) {
+                best = nowSea
             }
         }
 
     }
-    return bestRecord
+    return best
 }
+
+
 
 fun main(args: Array<String>) {
     val sc = Scanner(System.`in`)
-//    sc.nextReal()
+    //sc.nextReal()
     val initNemoWeight = sc.nextReal()
     val nemoVitesseLimit = sc.nextReal()
     val timeLimit = sc.nextReal()
@@ -372,17 +409,12 @@ fun main(args: Array<String>) {
             Vector(sc.nextReal(), sc.nextReal())
         )
     }
-    val t = System.currentTimeMillis()
     val sea = Sea(shrimps, 0.toReal(), timeLimit, initNemoPos, initNemoWeight, nemoVitesseLimit)
-    val (weight, rec) = dfs(
-        sea,
-        Pair((-1).toReal(), arrayListOf())
-    )
-    println("${System.currentTimeMillis() - t}ms")
 
-    println(rec.size)
-    println(weight - initNemoWeight)
-    for (r in rec) {
-        println("${r.time} ${r.pos?.x} ${r.pos?.y} ${r.id}")
+    val result = bfs(sea)
+    println(result.nemo.eatRecord.size)
+    println(result.nemo.weight - initNemoWeight)
+    for (i in result.nemo.eatRecord) {
+        println("${i.time} ${i.pos?.x} ${i.pos?.y} ${i.id}")
     }
 }
